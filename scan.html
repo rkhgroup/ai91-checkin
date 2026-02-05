@@ -58,34 +58,86 @@
       resultEl.textContent = text;
     }
 
-    async function checkCode(){
-      const code = (codeEl.value || "").trim();
-      if (!code) return setResult("Введите код.", false);
+async function checkCode(){
+  const code = (codeEl.value || "").trim();
+  if (!code) return setResult("Введите код.", false);
 
-      setResult("Проверяю...", true);
-      try{
-        const url = `${SCRIPT_URL}?code=${encodeURIComponent(code)}&by=${encodeURIComponent(checkerName)}`;
-        const res = await fetch(url, { cache: "no-store" });
-        const data = await res.json();
+  setResult("Проверяю...", true);
 
-        if (data.ok && data.status === "valid"){
-          setResult(`✅ VALID\nParticipantNo: ${data.participantNo}\nКод: ${code}`, true);
-          // чтобы не сканило один и тот же код 100 раз подряд:
-          await beep();
-        } else if (data.status === "used"){
-          setResult(`⚠️ ALREADY USED\nParticipantNo: ${data.participantNo}\nUsedAt: ${data.usedAt}\nUsedBy: ${data.usedBy}\nКод: ${code}`, false);
-          await buzz();
-        } else if (data.status === "not_found"){
-          setResult(`❌ NOT FOUND\nКод: ${code}`, false);
-          await buzz();
-        } else {
-          setResult(`❌ ERROR\n${JSON.stringify(data)}`, false);
-          await buzz();
-        }
-      } catch(e){
-        setResult(`❌ NETWORK ERROR\n${e}`, false);
-      }
+  const baseUrl = `${SCRIPT_URL}?code=${encodeURIComponent(code)}&by=${encodeURIComponent(checkerName)}`;
+
+  try {
+    // 1) пробуем обычный fetch
+    const res = await fetch(baseUrl, { cache: "no-store" });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new Error("Bad JSON / blocked fetch"); }
+
+    await handleResponse(data, code);
+    return;
+
+  } catch (e1) {
+    // 2) fallback: JSONP (обходит CORS/redirect в Safari)
+    try{
+      const data = await jsonp(baseUrl);
+      await handleResponse(data, code);
+      return;
+    } catch (e2){
+      setResult(`❌ NETWORK ERROR\n${e2}`, false);
     }
+  }
+}
+
+async function handleResponse(data, code){
+  if (data.ok && data.status === "valid"){
+    setResult(`✅ VALID\nParticipantNo: ${data.participantNo}\nКод: ${code}`, true);
+    await beep();
+  } else if (data.status === "used"){
+    setResult(`⚠️ ALREADY USED\nParticipantNo: ${data.participantNo}\nUsedAt: ${data.usedAt}\nUsedBy: ${data.usedBy}\nКод: ${code}`, false);
+    await buzz();
+  } else if (data.status === "not_found"){
+    setResult(`❌ NOT FOUND\nКод: ${code}`, false);
+    await buzz();
+  } else if (data.status === "inactive"){
+    setResult(`⛔ INACTIVE\nParticipantNo: ${data.participantNo}\nStatus: ${data.ticketStatus}\nКод: ${code}`, false);
+    await buzz();
+  } else {
+    setResult(`❌ ERROR\n${JSON.stringify(data)}`, false);
+    await buzz();
+  }
+}
+
+// JSONP helper
+function jsonp(url){
+  return new Promise((resolve, reject) => {
+    const cb = "cb_" + Math.random().toString(36).slice(2);
+    const s = document.createElement("script");
+    const t = setTimeout(() => {
+      cleanup();
+      reject(new Error("JSONP timeout"));
+    }, 8000);
+
+    function cleanup(){
+      clearTimeout(t);
+      delete window[cb];
+      s.remove();
+    }
+
+    window[cb] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+
+    s.onerror = () => {
+      cleanup();
+      reject(new Error("JSONP load failed"));
+    };
+
+    s.src = url + (url.includes("?") ? "&" : "?") + "callback=" + cb;
+    document.head.appendChild(s);
+  });
+}
 
     async function start(){
       if (qr) return;
