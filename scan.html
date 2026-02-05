@@ -95,14 +95,24 @@
         { fps: 10, qrbox: { width: 260, height: 260 } },
         (decodedText) => {
           // если QR = ссылка, вытащим code из параметра, иначе считаем как код
-          let code = decodedText;
-          try{
-            const u = new URL(decodedText);
-            const c = u.searchParams.get("code");
-            if (c) code = c;
-          } catch(_){}
-          codeEl.value = code.trim();
-          checkCode();
+          let code = (decodedText || "").trim();
+
+            // если это ссылка — вытащим параметр code
+            if (/^https?:\/\//i.test(code)) {
+            try {
+                const u = new URL(code);
+                const c = u.searchParams.get("code");
+                if (c) code = c.trim();
+            } catch (_) {}
+            }
+
+            // если QR вдруг содержит "code=AI91-000123" без полного URL
+            const m = code.match(/(?:\?|&)code=([^&]+)/i);
+            if (m && m[1]) code = decodeURIComponent(m[1]).trim();
+
+            codeEl.value = code;
+            checkCode();
+
         }
       );
     }
