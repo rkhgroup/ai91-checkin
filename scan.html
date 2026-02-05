@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI91 • Check-in</title>
+  <style>
+    body{font-family:system-ui;margin:0;padding:18px;background:#0b0f17;color:#fff}
+    .card{max-width:720px;margin:0 auto;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    input{flex:1;min-width:220px;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#fff}
+    button{padding:10px 12px;border:0;border-radius:12px;cursor:pointer}
+    #result{margin-top:12px;white-space:pre-line}
+    .ok{color:#6ee7b7}
+    .bad{color:#fb7185}
+    .muted{color:rgba(255,255,255,.65);font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin:0 0 8px">AI91 • Сканер билетов</h2>
+    <div class="muted">Наведи камеру на QR. Или вставь код вручную.</div>
+
+    <div style="height:14px"></div>
+    <div id="reader" style="width:100%;"></div>
+
+    <div style="height:14px"></div>
+    <div class="row">
+      <input id="code" placeholder="AI91-000123" />
+      <button onclick="checkCode()" style="background:#60a5fa">Проверить</button>
+      <button onclick="start()" style="background:#22c55e">Камера</button>
+      <button onclick="stop()" style="background:#ef4444">Стоп</button>
+    </div>
+
+    <div id="result"></div>
+  </div>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script>
+    const SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_WEBAPP_URL_HERE"; // .../exec
+    const checkerName = "gate-1"; // можно сделать поле ввода, если надо
+
+    const resultEl = document.getElementById("result");
+    const codeEl = document.getElementById("code");
+
+    // если открыли по ссылке scan.html?code=...
+    const params = new URLSearchParams(location.search);
+    const preset = params.get("code");
+    if (preset) {
+      codeEl.value = preset;
+      checkCode();
+    }
+
+    let qr;
+
+    function setResult(text, ok){
+      resultEl.className = ok ? "ok" : "bad";
+      resultEl.textContent = text;
+    }
+
+    async function checkCode(){
+      const code = (codeEl.value || "").trim();
+      if (!code) return setResult("Введите код.", false);
+
+      setResult("Проверяю...", true);
+      try{
+        const url = `${SCRIPT_URL}?code=${encodeURIComponent(code)}&by=${encodeURIComponent(checkerName)}`;
+        const res = await fetch(url, { cache: "no-store" });
+        const data = await res.json();
+
+        if (data.ok && data.status === "valid"){
+          setResult(`✅ VALID\nParticipantNo: ${data.participantNo}\nКод: ${code}`, true);
+          // чтобы не сканило один и тот же код 100 раз подряд:
+          await beep();
+        } else if (data.status === "used"){
+          setResult(`⚠️ ALREADY USED\nParticipantNo: ${data.participantNo}\nUsedAt: ${data.usedAt}\nUsedBy: ${data.usedBy}\nКод: ${code}`, false);
+          await buzz();
+        } else if (data.status === "not_found"){
+          setResult(`❌ NOT FOUND\nКод: ${code}`, false);
+          await buzz();
+        } else {
+          setResult(`❌ ERROR\n${JSON.stringify(data)}`, false);
+          await buzz();
+        }
+      } catch(e){
+        setResult(`❌ NETWORK ERROR\n${e}`, false);
+      }
+    }
+
+    async function start(){
+      if (qr) return;
+      qr = new Html5Qrcode("reader");
+      await qr.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 260, height: 260 } },
+        (decodedText) => {
+          // если QR = ссылка, вытащим code из параметра, иначе считаем как код
+          let code = decodedText;
+          try{
+            const u = new URL(decodedText);
+            const c = u.searchParams.get("code");
+            if (c) code = c;
+          } catch(_){}
+          codeEl.value = code.trim();
+          checkCode();
+        }
+      );
+    }
+
+    async function stop(){
+      if (!qr) return;
+      await qr.stop();
+      qr.clear();
+      qr = null;
+    }
+
+    // простые звуки
+    async function beep(){
+      try{
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 880; g.gain.value = 0.06;
+        o.start(); setTimeout(()=>{o.stop(); ctx.close();}, 120);
+      } catch(_){}
+    }
+    async function buzz(){
+      try{
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 180; g.gain.value = 0.08;
+        o.start(); setTimeout(()=>{o.stop(); ctx.close();}, 180);
+      } catch(_){}
+    }
+  </script>
+</body>
+</html>
