@@ -14,6 +14,37 @@
     .ok{color:#6ee7b7}
     .bad{color:#fb7185}
     .muted{color:rgba(255,255,255,.65);font-size:14px}
+
+    /* simple overlay */
+    .overlay{
+      position:fixed; inset:0; display:none;
+      background:rgba(0,0,0,.55);
+      align-items:center; justify-content:center;
+      padding:16px; z-index:9999;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .overlay.open{ display:flex; }
+    .modal{
+      width:min(520px, 100%);
+      background:rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.14);
+      border-radius:18px;
+      padding:16px;
+      box-shadow:0 24px 90px rgba(0,0,0,.55);
+    }
+    .modal h3{margin:0 0 8px;font-size:18px}
+    .pill{
+      display:inline-flex; align-items:center; gap:8px;
+      border-radius:999px;
+      padding:6px 10px;
+      font-size:13px;
+      border:1px solid rgba(255,255,255,.16);
+      background:rgba(255,255,255,.06);
+      margin-bottom:10px;
+    }
+    .modal .actions{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
+    .modal .actions button{flex:1; min-width:180px; border-radius:12px; padding:12px 14px}
   </style>
 </head>
 <body>
@@ -35,13 +66,39 @@
     <div id="result"></div>
   </div>
 
+  <!-- overlay/modal for "pause" UX -->
+  <div id="overlay" class="overlay" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div id="overlayPill" class="pill">⏳</div>
+      <h3 id="overlayTitle">Готово</h3>
+      <div id="overlayText" class="muted" style="white-space:pre-line"></div>
+      <div class="actions">
+        <button onclick="scanNext()" style="background:#22c55e">Сканировать следующий</button>
+        <button onclick="closeOverlay()" style="background:rgba(255,255,255,.10);color:#fff;border:1px solid rgba(255,255,255,.14)">
+          Закрыть
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script>
-    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxp76mOZrV5wZ1XbauA1eHVvDO8WKCre7Di8iG2rfFNXj0ULkhOupXcEGxxsou4Qagb/exec"; // .../exec
-    const checkerName = "gate-1"; // можно сделать поле ввода, если надо
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxp76mOZrV5wZ1XbauA1eHVvvDO8WKCre7Di8iG2rfFNXj0ULkhOupXcEGxxsou4Qagb/exec"; // .../exec
+    const checkerName = "gate-1";
+
+    // антидубль + пауза
+    const COOLDOWN_MS = 2500;
+    let scanLocked = false;
+    let lastScannedCode = null;
+    let qr = null;
 
     const resultEl = document.getElementById("result");
     const codeEl = document.getElementById("code");
+
+    const overlayEl = document.getElementById("overlay");
+    const overlayPill = document.getElementById("overlayPill");
+    const overlayTitle = document.getElementById("overlayTitle");
+    const overlayText = document.getElementById("overlayText");
 
     // если открыли по ссылке scan.html?code=...
     const params = new URLSearchParams(location.search);
@@ -51,128 +108,203 @@
       checkCode();
     }
 
-    let qr;
-
     function setResult(text, ok){
       resultEl.className = ok ? "ok" : "bad";
       resultEl.textContent = text;
     }
 
-async function checkCode(){
-  const code = (codeEl.value || "").trim();
-  if (!code) return setResult("Введите код.", false);
-
-  setResult("Проверяю...", true);
-
-  const baseUrl = `${SCRIPT_URL}?code=${encodeURIComponent(code)}&by=${encodeURIComponent(checkerName)}`;
-
-  try {
-    // 1) пробуем обычный fetch
-    const res = await fetch(baseUrl, { cache: "no-store" });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); }
-    catch { throw new Error("Bad JSON / blocked fetch"); }
-
-    await handleResponse(data, code);
-    return;
-
-  } catch (e1) {
-    // 2) fallback: JSONP (обходит CORS/redirect в Safari)
-    try{
-      const data = await jsonp(baseUrl);
-      await handleResponse(data, code);
-      return;
-    } catch (e2){
-      setResult(`❌ NETWORK ERROR\n${e2}`, false);
+    function openOverlay({ title, text, ok }) {
+      overlayPill.textContent = ok ? "✅ Вход разрешён" : "⚠️ Внимание";
+      overlayPill.style.borderColor = ok ? "rgba(110,231,183,.35)" : "rgba(251,113,133,.35)";
+      overlayPill.style.background = ok ? "rgba(110,231,183,.10)" : "rgba(251,113,133,.10)";
+      overlayTitle.textContent = title;
+      overlayText.textContent = text;
+      overlayEl.classList.add("open");
     }
-  }
-}
-
-async function handleResponse(data, code){
-  if (data.ok && data.status === "valid"){
-    setResult(`✅ VALID\nParticipantNo: ${data.participantNo}\nКод: ${code}`, true);
-    await beep();
-  } else if (data.status === "used"){
-    setResult(`⚠️ ALREADY USED\nParticipantNo: ${data.participantNo}\nUsedAt: ${data.usedAt}\nUsedBy: ${data.usedBy}\nКод: ${code}`, false);
-    await buzz();
-  } else if (data.status === "not_found"){
-    setResult(`❌ NOT FOUND\nКод: ${code}`, false);
-    await buzz();
-  } else if (data.status === "inactive"){
-    setResult(`⛔ INACTIVE\nParticipantNo: ${data.participantNo}\nStatus: ${data.ticketStatus}\nКод: ${code}`, false);
-    await buzz();
-  } else {
-    setResult(`❌ ERROR\n${JSON.stringify(data)}`, false);
-    await buzz();
-  }
-}
-
-// JSONP helper
-function jsonp(url){
-  return new Promise((resolve, reject) => {
-    const cb = "cb_" + Math.random().toString(36).slice(2);
-    const s = document.createElement("script");
-    const t = setTimeout(() => {
-      cleanup();
-      reject(new Error("JSONP timeout"));
-    }, 8000);
-
-    function cleanup(){
-      clearTimeout(t);
-      delete window[cb];
-      s.remove();
+    function closeOverlay(){
+      overlayEl.classList.remove("open");
     }
 
-    window[cb] = (data) => {
-      cleanup();
-      resolve(data);
-    };
+    function unlockLater(ms = COOLDOWN_MS){
+      setTimeout(() => {
+        scanLocked = false;
+        lastScannedCode = null;
+      }, ms);
+    }
 
-    s.onerror = () => {
-      cleanup();
-      reject(new Error("JSONP load failed"));
-    };
+    async function scanNext(){
+      closeOverlay();
+      codeEl.value = "";
+      setResult("Готов к следующему сканированию.", true);
+      scanLocked = false;
+      lastScannedCode = null;
+      await start();
+    }
 
-    s.src = url + (url.includes("?") ? "&" : "?") + "callback=" + cb;
-    document.head.appendChild(s);
-  });
-}
+    async function checkCode(){
+      const code = (codeEl.value || "").trim();
+      if (!code) return setResult("Введите код.", false);
+
+      if (scanLocked) return;               // ⛔ защита от повторов
+      if (code === lastScannedCode) return;  // ⛔ тот же код подряд — игнор
+
+      scanLocked = true;
+      lastScannedCode = code;
+
+      setResult("Проверяю...", true);
+
+      const baseUrl = `${SCRIPT_URL}?code=${encodeURIComponent(code)}&by=${encodeURIComponent(checkerName)}`;
+
+      try {
+        // 1) пробуем обычный fetch
+        const res = await fetch(baseUrl, { cache: "no-store" });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch { throw new Error("Bad JSON / blocked fetch"); }
+
+        await handleResponse(data, code);
+        return;
+
+      } catch (e1) {
+        // 2) fallback: JSONP
+        try{
+          const data = await jsonp(baseUrl);
+          await handleResponse(data, code);
+          return;
+        } catch (e2){
+          setResult(`❌ NETWORK ERROR\n${e2}`, false);
+          unlockLater(1200);
+        }
+      }
+    }
+
+    async function handleResponse(data, code){
+      const nameLine = (data.fullName ? `${data.fullName}\n` : "");
+      const partLine = (data.participantNo ? `ParticipantNo: ${data.participantNo}\n` : "");
+      const codeLine = `Код: ${code}`;
+
+      if (data.ok && data.status === "valid"){
+        setResult(`✅ VALID\n${partLine}${codeLine}`, true);
+        await beep();
+
+        // ⛔ стопаем камеру, чтобы не поймать USED мгновенно
+        await stop();
+
+        openOverlay({
+          ok: true,
+          title: "QR принят",
+          text: `${nameLine}${partLine}${codeLine}\n\n⏸ Готово. Нажмите «Сканировать следующий».`,
+        });
+
+        unlockLater();
+        return;
+      }
+
+      if (data.status === "used"){
+        setResult(`⚠️ ALREADY USED\n${partLine}UsedAt: ${data.usedAt}\nUsedBy: ${data.usedBy}\n${codeLine}`, false);
+        await buzz();
+        await stop();
+
+        openOverlay({
+          ok: false,
+          title: "Билет уже использован",
+          text: `${nameLine}${partLine}UsedAt: ${data.usedAt || "-"}\nUsedBy: ${data.usedBy || "-"}\n${codeLine}\n\n⏸ Нажмите «Сканировать следующий».`,
+        });
+
+        unlockLater();
+        return;
+      }
+
+      if (data.status === "not_found"){
+        setResult(`❌ NOT FOUND\n${codeLine}`, false);
+        await buzz();
+        unlockLater(1200);
+        return;
+      }
+
+      if (data.status === "inactive"){
+        setResult(`⛔ INACTIVE\n${partLine}Status: ${data.ticketStatus}\n${codeLine}`, false);
+        await buzz();
+        unlockLater(1500);
+        return;
+      }
+
+      setResult(`❌ ERROR\n${JSON.stringify(data)}`, false);
+      await buzz();
+      unlockLater(1500);
+    }
+
+    // JSONP helper
+    function jsonp(url){
+      return new Promise((resolve, reject) => {
+        const cb = "cb_" + Math.random().toString(36).slice(2);
+        const s = document.createElement("script");
+        const t = setTimeout(() => {
+          cleanup();
+          reject(new Error("JSONP timeout"));
+        }, 8000);
+
+        function cleanup(){
+          clearTimeout(t);
+          delete window[cb];
+          s.remove();
+        }
+
+        window[cb] = (data) => {
+          cleanup();
+          resolve(data);
+        };
+
+        s.onerror = () => {
+          cleanup();
+          reject(new Error("JSONP load failed"));
+        };
+
+        s.src = url + (url.includes("?") ? "&" : "?") + "callback=" + cb;
+        document.head.appendChild(s);
+      });
+    }
 
     async function start(){
       if (qr) return;
       qr = new Html5Qrcode("reader");
+
       await qr.start(
         { facingMode: "environment" },
         { fps: 10, qrbox: { width: 260, height: 260 } },
         (decodedText) => {
-          // если QR = ссылка, вытащим code из параметра, иначе считаем как код
+          if (scanLocked) return;
+
           let code = (decodedText || "").trim();
 
-            // если это ссылка — вытащим параметр code
-            if (/^https?:\/\//i.test(code)) {
+          // если это ссылка — вытащим параметр code
+          if (/^https?:\/\//i.test(code)) {
             try {
-                const u = new URL(code);
-                const c = u.searchParams.get("code");
-                if (c) code = c.trim();
+              const u = new URL(code);
+              const c = u.searchParams.get("code");
+              if (c) code = c.trim();
             } catch (_) {}
-            }
+          }
 
-            // если QR вдруг содержит "code=AI91-000123" без полного URL
-            const m = code.match(/(?:\?|&)code=([^&]+)/i);
-            if (m && m[1]) code = decodeURIComponent(m[1]).trim();
+          // если QR содержит "code=AI91-000123" без полного URL
+          const m = code.match(/(?:\?|&)code=([^&]+)/i);
+          if (m && m[1]) code = decodeURIComponent(m[1]).trim();
 
-            codeEl.value = code;
-            checkCode();
-
+          codeEl.value = code;
+          checkCode();
         }
       );
     }
 
     async function stop(){
       if (!qr) return;
-      await qr.stop();
-      qr.clear();
+      try {
+        await qr.stop();
+      } catch(_) {}
+      try {
+        qr.clear();
+      } catch(_) {}
       qr = null;
     }
 
